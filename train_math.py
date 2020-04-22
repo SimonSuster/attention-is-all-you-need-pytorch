@@ -6,6 +6,7 @@ import argparse
 import math
 import time
 
+from sklearn.metrics import accuracy_score
 from tqdm import tqdm
 import torch
 import torch.nn.functional as F
@@ -60,12 +61,9 @@ def train_epoch(model, training_data, optimizer, device, smoothing):
     model.train()
 
     total_loss = 0
-    n_word_total = 0
-    n_word_correct = 0
 
-    for batch in tqdm(
-            training_data, mininterval=2,
-            desc='  - (Training)   ', leave=False):
+    #for batch in tqdm(training_data, mininterval=2, desc='  - (Training)   ', leave=False):
+    for batch in training_data:
 
         # prepare data
         src_seq, src_pos, tgt_seq, tgt_pos = map(lambda x: x.to(device), batch)
@@ -76,7 +74,7 @@ def train_epoch(model, training_data, optimizer, device, smoothing):
         pred = model(src_seq, src_pos, tgt_seq, tgt_pos)
 
         # backward
-        loss, n_correct = cal_performance(pred, gold, smoothing=smoothing)
+        loss = cal_loss(pred, gold, smoothing=smoothing)
         loss.backward()
 
         # update parameters
@@ -85,24 +83,16 @@ def train_epoch(model, training_data, optimizer, device, smoothing):
         # note keeping
         total_loss += loss.item()
 
-        non_pad_mask = gold.ne(Constants.PAD)
-        n_word = non_pad_mask.sum().item()
-        n_word_total += n_word
-        n_word_correct += n_correct
-
-    loss_per_word = total_loss/n_word_total
-    accuracy = n_word_correct/n_word_total
-    return loss_per_word, accuracy
+    return total_loss
 
 def eval_epoch(model, validation_data, device):
     ''' Epoch operation in evaluation phase '''
 
     model.eval()
 
-    total_loss = 0
-    n_word_total = 0
-    n_word_correct = 0
-
+    #total_loss = 0
+    preds = []
+    golds = []
     with torch.no_grad():
         for batch in tqdm(
                 validation_data, mininterval=2,
@@ -111,22 +101,25 @@ def eval_epoch(model, validation_data, device):
             # prepare data
             src_seq, src_pos, tgt_seq, tgt_pos = map(lambda x: x.to(device), batch)
             gold = tgt_seq[:, 1:]
-
+            golds.extend(gold)
             # forward
             pred = model(src_seq, src_pos, tgt_seq, tgt_pos)
-            loss, n_correct = cal_performance(pred, gold, smoothing=False)
+            preds.extend(pred)
+            #loss, n_correct = cal_performance(pred, gold, smoothing=False)
+            #loss, n_correct = cal_performance(pred, gold, smoothing=False)
 
             # note keeping
-            total_loss += loss.item()
+            #total_loss += loss.item()
 
-            non_pad_mask = gold.ne(Constants.PAD)
-            n_word = non_pad_mask.sum().item()
-            n_word_total += n_word
-            n_word_correct += n_correct
+            #non_pad_mask = gold.ne(Constants.PAD)
+            #n_word = non_pad_mask.sum().item()
+            #n_word_total += n_word
+            #n_word_correct += n_correct
 
-    loss_per_word = total_loss/n_word_total
-    accuracy = n_word_correct/n_word_total
-    return loss_per_word, accuracy
+    #loss_per_word = total_loss/n_word_total
+    #accuracy = n_word_correct/n_word_total
+    #return loss_per_word, accuracy
+    return preds, golds
 
 def train(model, training_data, validation_data, optimizer, device, opt):
     ''' Start training '''
@@ -150,19 +143,19 @@ def train(model, training_data, validation_data, optimizer, device, opt):
         print('[ Epoch', epoch_i, ']')
 
         start = time.time()
-        train_loss, train_accu = train_epoch(
-            model, training_data, optimizer, device, smoothing=opt.label_smoothing)
-        print('  - (Training)   ppl: {ppl: 8.5f}, accuracy: {accu:3.3f} %, '\
-              'elapse: {elapse:3.3f} min'.format(
-                  ppl=math.exp(min(train_loss, 100)), accu=100*train_accu,
-                  elapse=(time.time()-start)/60))
+        train_loss = train_epoch(model, training_data, optimizer, device, smoothing=opt.label_smoothing)
+        print(f'  - (Training)   loss: {train_loss:.1f}, elapse: {((time.time()-start)/60):3.3f} min')
 
-        start = time.time()
-        valid_loss, valid_accu = eval_epoch(model, validation_data, device)
-        print('  - (Validation) ppl: {ppl: 8.5f}, accuracy: {accu:3.3f} %, '\
-                'elapse: {elapse:3.3f} min'.format(
-                    ppl=math.exp(min(valid_loss, 100)), accu=100*valid_accu,
-                    elapse=(time.time()-start)/60))
+        #start = time.time()
+        #valid_loss, valid_accu = eval_epoch(model, validation_data, device)
+        preds, golds = eval_epoch(model, validation_data, device)
+        y_pred = [str(pred) for pred in preds]
+        y_true = [str(gold) for gold in golds]
+        valid_accu = accuracy_score(y_true=y_true, y_pred=y_pred)
+
+
+        #print('  - (Validation) accuracy: {accu:3.3f} %, '\
+        #        'elapse: {elapse:3.3f} min'.format(accu=100*valid_accu, elapse=(time.time()-start)/60))
 
         valid_accus += [valid_accu]
 
@@ -274,7 +267,7 @@ def prepare_dataloaders(data, opt):
             tgt_word2idx=data['dict']['tgt'],
             src_insts=data['train']['src'],
             tgt_insts=data['train']['tgt']),
-        num_workers=2,
+        num_workers=0,
         batch_size=opt.batch_size,
         collate_fn=paired_collate_fn,
         shuffle=True)
@@ -285,7 +278,7 @@ def prepare_dataloaders(data, opt):
             tgt_word2idx=data['dict']['tgt'],
             src_insts=data['valid']['src'],
             tgt_insts=data['valid']['tgt']),
-        num_workers=2,
+        num_workers=0,
         batch_size=opt.batch_size,
         collate_fn=paired_collate_fn)
     return train_loader, valid_loader
